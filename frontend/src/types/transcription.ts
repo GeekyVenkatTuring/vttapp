@@ -3,8 +3,5 @@ export interface TranscriptionRecord {
   text: string;
   language: string;
   duration: number;
-  timestamp: string;
-  filename?: string;
+  timestamp: number;
 }
-
-export type RecorderState = 'idle' | 'recording' | 'processing';

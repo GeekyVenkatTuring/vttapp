@@ -5,7 +5,7 @@ interface Props {
   isRecording: boolean;
 }
 
-export function Waveform({ stream, isRecording }: Props) {
+export default function Waveform({ stream, isRecording }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number>(0);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -84,5 +84,5 @@ export function Waveform({ stream, isRecording }: Props) {
     };
   }, []);
 
-  return <canvas ref={canvasRef} width={300} height={80} className="rounded-lg" />;
+  return <canvas ref={canvasRef} width={300} height={80} className="rounded-lg w-full" />;
 }

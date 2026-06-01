@@ -2,7 +2,7 @@ import type { TranscriptionRecord } from './types';
 
 export async function transcribeAudio(blob: Blob, language: string): Promise<TranscriptionRecord> {
   const formData = new FormData();
-  formData.append('audio', blob, 'recording.webm');
+  formData.append('audio_file', blob, 'recording.webm');
   formData.append('language', language);
 
   const response = await fetch('/api/transcribe', {
@@ -11,7 +11,8 @@ export async function transcribeAudio(blob: Blob, language: string): Promise<Tra
   });
 
   if (!response.ok) {
-    throw new Error(`Transcription failed: ${response.statusText}`);
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail ?? `Transcription failed: ${response.statusText}`);
   }
 
   return response.json() as Promise<TranscriptionRecord>;

@@ -1,17 +1,31 @@
 import os
 import uuid
 import tempfile
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-import openai
+from faster_whisper import WhisperModel
 
-load_dotenv()
+# Lazy-loaded model — downloaded on first use (~150 MB for "base")
+_model: WhisperModel | None = None
 
-app = FastAPI()
+def get_model() -> WhisperModel:
+    global _model
+    if _model is None:
+        # swap "base" → "small" or "medium" for better quality at the cost of speed
+        _model = WhisperModel("base", device="cpu", compute_type="int8")
+    return _model
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    get_model()  # warm up at startup
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,7 +40,7 @@ history: list[dict] = []
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "1.0"}
+    return {"status": "ok", "version": "1.0", "model": "faster-whisper/base"}
 
 
 @app.post("/api/transcribe")
@@ -34,35 +48,29 @@ async def transcribe(
     audio_file: UploadFile = File(...),
     language: str = Form(default="auto"),
 ):
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=422, detail="OPENAI_API_KEY is not set")
-
     contents = await audio_file.read()
-
     suffix = os.path.splitext(audio_file.filename or "audio")[1] or ".webm"
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
 
     try:
-        client = openai.OpenAI(api_key=api_key)
-        with open(tmp_path, "rb") as f:
-            response = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                language=None if language == "auto" else language,
-                response_format="verbose_json",
-            )
+        model = get_model()
+        lang = None if language == "auto" else language
+        segments, info = model.transcribe(tmp_path, language=lang, beam_size=5)
+        text = " ".join(seg.text.strip() for seg in segments).strip()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
         os.unlink(tmp_path)
 
     record: dict = {
         "id": str(uuid.uuid4()),
-        "text": response.text,
-        "language": getattr(response, "language", language),
-        "duration": float(getattr(response, "duration", 0.0)),
-        "timestamp": datetime.utcnow().isoformat(),
+        "text": text,
+        "language": info.language,
+        "duration": round(float(info.duration), 2),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "filename": audio_file.filename or "audio",
     }
     history.append(record)
