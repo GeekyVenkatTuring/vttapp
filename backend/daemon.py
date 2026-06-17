@@ -67,13 +67,25 @@ def _notify(title: str, message: str):
     )
 
 
+# Reuses the same CGEvent/Accessibility permission the global key listener
+# already has — unlike AppleScript "keystroke", which additionally needs
+# Automation consent and silently fails to paste when it isn't granted.
+_paste_controller = keyboard.Controller()
+
+
 def _paste_text(text: str):
     subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
-    subprocess.run(
-        ["osascript", "-e",
-         'tell application "System Events" to keystroke "v" using command down'],
-        check=True,
-    )
+    try:
+        with _paste_controller.pressed(keyboard.Key.cmd):
+            _paste_controller.press("v")
+            _paste_controller.release("v")
+    except Exception as exc:  # noqa: BLE001 — fall back to AppleScript
+        print(f"⚠  pynput paste failed ({exc}); trying AppleScript…")
+        subprocess.run(
+            ["osascript", "-e",
+             'tell application "System Events" to keystroke "v" using command down'],
+            check=False,
+        )
 
 
 # ── audio ─────────────────────────────────────────────────────────────────────
@@ -393,10 +405,15 @@ class WhisprApp:
         self.bar.hide()
         self.root.update_idletasks()
         if text:
-            _paste_text(text)
-            print(f"✅ {text}")
+            # Let the bar fully dismiss and focus return to the target app
+            # before sending Cmd+V, so the paste lands at the cursor.
+            self.root.after(120, lambda: self._paste(text))
         else:
             print("⚠  No speech detected.")
+
+    def _paste(self, text: str):
+        _paste_text(text)
+        print(f"✅ {text}")
 
     # ---- loops ----------------------------------------------------------------
     def _poll(self):
