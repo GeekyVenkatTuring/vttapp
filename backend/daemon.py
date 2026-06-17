@@ -6,9 +6,19 @@ Press Right Option (⌥) once  → a small bar pops up and starts listening.
 Press Right Option (⌥) again → the bar closes, the audio is transcribed,
                                formatted, and pasted into the focused app.
 
+While the bar is up you can also:
+  - click ✓ (OK)     → finish, transcribe & paste (same as pressing ⌥ again)
+  - click ✕ (Delete) → cancel and discard the recording
+  - press Escape     → cancel and discard the recording
+
 The backend transcribes with faster-whisper and then reformats the raw text
 with a local LLM (Gemma 3 1B via Ollama) so the pasted result has proper
 punctuation and capitalization.
+
+The process runs as a macOS "accessory" app: no Dock icon, and the bar joins
+whatever Space you are currently on instead of switching you to a blank
+desktop. The window is non-activating, so clicking its buttons does not steal
+keyboard focus from the app you are typing into.
 
 Requires one-time macOS permissions:
   - Accessibility  (System Settings → Privacy & Security → Accessibility)
@@ -128,6 +138,10 @@ def on_press(key):
     if key == TRIGGER_KEY and not _alt_down:
         _alt_down = True
         _cmd_q.put(("toggle", None))
+    elif key == keyboard.Key.esc:
+        # non-suppressing: Escape still works normally in the focused app; we
+        # only act on it when the bar is up (the handler ignores it otherwise).
+        _cmd_q.put(("cancel", None))
 
 
 def on_release(key):
@@ -136,15 +150,54 @@ def on_release(key):
         _alt_down = False
 
 
+# ── macOS window behavior (no Dock icon, joins current Space, non-activating) ──
+def _make_app_accessory():
+    """Make the process an accessory app so it never steals focus / switches
+    Spaces when a window appears."""
+    try:
+        from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+        NSApplication.sharedApplication().setActivationPolicy_(
+            NSApplicationActivationPolicyAccessory
+        )
+    except Exception as exc:  # noqa: BLE001
+        print("⚠  Could not set accessory activation policy:", exc)
+
+
+def _make_window_float_all_spaces():
+    """Make every Tk window appear on the *current* Space (instead of switching
+    to the app's own Space) and float above normal windows."""
+    try:
+        from AppKit import (
+            NSApplication,
+            NSWindowCollectionBehaviorCanJoinAllSpaces,
+            NSWindowCollectionBehaviorStationary,
+            NSWindowCollectionBehaviorFullScreenAuxiliary,
+            NSStatusWindowLevel,
+        )
+        behavior = (
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorStationary
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+        )
+        for w in NSApplication.sharedApplication().windows():
+            w.setCollectionBehavior_(behavior)
+            w.setLevel_(NSStatusWindowLevel)
+    except Exception as exc:  # noqa: BLE001
+        print("⚠  Could not configure window Space behavior:", exc)
+
+
 # ── floating bar UI ───────────────────────────────────────────────────────────
 class WhisprBar:
-    """A small always-on-top pill that visualizes listening / transcribing."""
+    """A small always-on-top pill that visualizes listening / transcribing
+    and offers OK / cancel buttons."""
 
-    W, H = 240, 60
+    W, H = 340, 60
     N_BARS = 15
     BG = "#181a1f"
     ACCENT = "#5b8cff"
     ACCENT_REC = "#ff5b6e"
+    OK_COLOR = "#3ecf6b"
+    CANCEL_COLOR = "#ff5b6e"
     TEXT = "#c8ccd4"
 
     def __init__(self, root: tk.Tk):
@@ -153,14 +206,24 @@ class WhisprBar:
         self.canvas = None
         self.bars = []
         self.dot = None
-        self.label = None
+        self.status = None
         self._phase = 0.0
+        # wired up by the app
+        self.on_ok = lambda: None
+        self.on_cancel = lambda: None
 
     def _build(self):
         if self.win is not None:
             return
         self.win = tk.Toplevel(self.root)
-        self.win.overrideredirect(True)
+        # Borderless + non-activating: clicking the bar must NOT pull keyboard
+        # focus away from the app the user is typing into (otherwise the paste
+        # would land in the wrong place).
+        try:
+            self.win.tk.call("::tk::unsupported::MacWindowStyle", "style",
+                             self.win._w, "plain", "noActivates")
+        except tk.TclError:
+            self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         try:
             self.win.attributes("-alpha", 0.96)
@@ -180,24 +243,40 @@ class WhisprBar:
         self.canvas.pack(fill="both", expand=True)
         self._round_rect(2, 2, self.W - 2, self.H - 2, 16, fill=self.BG)
 
-        # recording dot on the left
-        self.dot = self.canvas.create_oval(16, self.H / 2 - 5, 26, self.H / 2 + 5,
-                                            fill=self.ACCENT_REC, outline="")
+        cy = self.H / 2
 
-        # waveform bars in the middle
-        cx = self.W / 2 + 6
+        # recording dot on the left
+        self.dot = self.canvas.create_oval(18, cy - 5, 28, cy + 5,
+                                           fill=self.ACCENT_REC, outline="")
+
+        # waveform bars
         spacing = 9
+        cx = 145
         start = cx - (self.N_BARS - 1) * spacing / 2
         for i in range(self.N_BARS):
             bx = start + i * spacing
-            bar = self.canvas.create_line(bx, self.H / 2 - 3, bx, self.H / 2 + 3,
+            bar = self.canvas.create_line(bx, cy - 3, bx, cy + 3,
                                           fill=self.ACCENT, width=4, capstyle="round")
             self.bars.append(bar)
 
-        self.label = self.canvas.create_text(
-            self.W - 16, self.H / 2, anchor="e",
+        # status text (shown while transcribing, hidden while recording)
+        self.status = self.canvas.create_text(
+            self.W - 18, cy, anchor="e",
             text="", fill=self.TEXT, font=("Helvetica", 11),
         )
+
+        # OK + Cancel buttons (shown while recording)
+        self._button(self.W - 66, cy, 12, "✓", self.OK_COLOR, "btn_ok", self.on_ok)
+        self._button(self.W - 28, cy, 12, "✕", self.CANCEL_COLOR, "btn_cancel", self.on_cancel)
+
+        _make_window_float_all_spaces()
+
+    def _button(self, cx, cy, r, glyph, color, tag, cmd):
+        self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                fill=color, outline="", tags=(tag,))
+        self.canvas.create_text(cx, cy, text=glyph, fill="#ffffff",
+                                font=("Helvetica", 13, "bold"), tags=(tag,))
+        self.canvas.tag_bind(tag, "<Button-1>", lambda _e: cmd())
 
     def _round_rect(self, x1, y1, x2, y2, r, **kw):
         pts = [
@@ -206,6 +285,11 @@ class WhisprBar:
             x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
         ]
         return self.canvas.create_polygon(pts, smooth=True, **kw)
+
+    def _set_buttons_visible(self, visible: bool):
+        st = "normal" if visible else "hidden"
+        self.canvas.itemconfigure("btn_ok", state=st)
+        self.canvas.itemconfigure("btn_cancel", state=st)
 
     def show(self):
         self._build()
@@ -225,19 +309,20 @@ class WhisprBar:
 
         if state == STATE_RECORDING:
             self.canvas.itemconfig(self.dot, fill=self.ACCENT_REC)
-            self.canvas.itemconfig(self.label, text="Listening…")
+            self.canvas.itemconfig(self.status, text="")
+            self._set_buttons_visible(True)
             base = _level
             for i, bar in enumerate(self.bars):
-                # blend the live mic level with a travelling sine for liveliness
                 wob = 0.5 + 0.5 * math.sin(self._phase + i * 0.6)
                 amp = (0.18 + 0.82 * base) * wob
                 h = 3 + amp * (self.H / 2 - 8)
                 bx = self.canvas.coords(bar)[0]
                 self.canvas.coords(bar, bx, cy - h, bx, cy + h)
                 self.canvas.itemconfig(bar, fill=self.ACCENT_REC)
-        else:  # transcribing — gentle "thinking" shimmer
+        else:  # transcribing — gentle "thinking" shimmer, buttons hidden
             self.canvas.itemconfig(self.dot, fill=self.ACCENT)
-            self.canvas.itemconfig(self.label, text="Transcribing…")
+            self.canvas.itemconfig(self.status, text="Transcribing…")
+            self._set_buttons_visible(False)
             for i, bar in enumerate(self.bars):
                 wob = 0.5 + 0.5 * math.sin(self._phase * 1.4 + i * 0.9)
                 h = 3 + wob * (self.H / 2 - 16)
@@ -250,7 +335,10 @@ class WhisprApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.withdraw()  # no main window, only the floating bar
+        _make_app_accessory()
         self.bar = WhisprBar(self.root)
+        self.bar.on_ok = lambda: _cmd_q.put(("toggle", None))
+        self.bar.on_cancel = lambda: _cmd_q.put(("cancel", None))
 
     # ---- command handling -----------------------------------------------------
     def _handle(self, cmd, payload):
@@ -261,8 +349,12 @@ class WhisprApp:
             elif _state == STATE_RECORDING:
                 self._stop_and_transcribe()
             # ignore toggles while transcribing
+        elif cmd == "cancel":
+            self._cancel()
         elif cmd == "result":
-            self._finish(payload)
+            # ignore late results if the user cancelled in the meantime
+            if _state == STATE_TRANSCRIBING:
+                self._finish(payload)
         elif cmd == "error":
             _state = STATE_IDLE
             self.bar.hide()
@@ -275,7 +367,7 @@ class WhisprApp:
             _audio_frames.clear()
             _state = STATE_RECORDING
         self.bar.show()
-        print("🎤 Listening… (press ⌥ again to stop)")
+        print("🎤 Listening… (⌥ again or ✓ to transcribe, ✕/Esc to cancel)")
 
     def _stop_and_transcribe(self):
         global _state
@@ -285,6 +377,15 @@ class WhisprApp:
         secs = len(np.concatenate(frames)) / SAMPLE_RATE if frames else 0.0
         print(f"⏳ Transcribing {secs:.1f}s…")
         threading.Thread(target=_transcribe_worker, args=(frames,), daemon=True).start()
+
+    def _cancel(self):
+        global _state
+        if _state in (STATE_RECORDING, STATE_TRANSCRIBING):
+            with _lock:
+                _state = STATE_IDLE
+                _audio_frames.clear()
+            self.bar.hide()
+            print("✖  Cancelled.")
 
     def _finish(self, text: str):
         global _state
@@ -320,7 +421,7 @@ class WhisprApp:
 def main():
     print("🎙  Whispr Daemon started (toggle mode).")
     print("    Press Right Option (⌥) to start listening, press again to transcribe & paste.")
-    print("    Press Ctrl+C in this terminal to quit.\n")
+    print("    ✓ = transcribe,  ✕ / Esc = cancel.  Ctrl+C here to quit.\n")
 
     # IMPORTANT (macOS): Tkinter and pynput both call the Text Input Source
     # (TIS/TSM) APIs, which abort the process if hit from two threads at once.
