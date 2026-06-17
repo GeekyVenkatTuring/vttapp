@@ -4,3 +4,4 @@ python-multipart==0.0.9
 faster-whisper==1.1.1
 python-dotenv==1.0.1
 aiofiles==23.2.1
+requests==2.32.3  # backend → Ollama (Gemma 3 1B) for transcript formatting
