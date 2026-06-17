@@ -74,6 +74,31 @@ def _notify(title: str, message: str):
 _paste_controller = keyboard.Controller()
 
 
+def _frontmost_app():
+    """The app the user is working in right now (captured before the bar
+    appears), as an NSRunningApplication — or None."""
+    try:
+        from AppKit import NSWorkspace
+        return NSWorkspace.sharedWorkspace().frontmostApplication()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _reactivate(app) -> None:
+    """Re-make *app* the key window before pasting. The bar, although it never
+    becomes the *frontmost application*, can quietly steal key-window status, so
+    a synthetic Cmd+V would otherwise land nowhere even though the target app
+    still looks frontmost."""
+    if app is None:
+        return
+    try:
+        from AppKit import NSApplicationActivateIgnoringOtherApps
+        app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+        time.sleep(0.12)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _paste_text(text: str):
     subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
     time.sleep(0.05)  # let the pasteboard settle
@@ -436,6 +461,7 @@ class WhisprApp:
         self.bar = WhisprBar(self.root)
         self.bar.on_ok = lambda: _cmd_q.put(("toggle", None))
         self.bar.on_cancel = lambda: _cmd_q.put(("cancel", None))
+        self._target_app = None  # app to paste back into
 
     # ---- command handling -----------------------------------------------------
     def _handle(self, cmd, payload):
@@ -460,6 +486,9 @@ class WhisprApp:
 
     def _start_recording(self):
         global _state
+        # Remember where the user is typing *before* the bar appears, so we can
+        # paste back into it.
+        self._target_app = _frontmost_app()
         with _lock:
             _audio_frames.clear()
             _state = STATE_RECORDING
@@ -497,6 +526,7 @@ class WhisprApp:
             print("⚠  No speech detected.")
 
     def _paste(self, text: str):
+        _reactivate(self._target_app)  # restore key-window focus to the target app
         _paste_text(text)
         print(f"✅ {text}")
 
