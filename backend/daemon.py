@@ -174,6 +174,40 @@ def on_release(key):
 
 
 # ── macOS permissions ─────────────────────────────────────────────────────────
+def _host_app_name() -> str:
+    """Best-effort name of the app hosting this process (the terminal), so we
+    can tell the user exactly which app to enable in Accessibility."""
+    try:
+        names = []
+        pid = os.getppid()
+        for _ in range(10):
+            if pid <= 1:
+                break
+            out = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+                                 capture_output=True, text=True).stdout.strip()
+            if not out:
+                break
+            ppid_str, _, comm = out.partition(" ")
+            comm = comm.strip()
+            names.append(comm)
+            # If this is an .app bundle, return its display name.
+            for seg in comm.split("/"):
+                if seg.endswith(".app"):
+                    return seg[:-4]
+            try:
+                pid = int(ppid_str)
+            except ValueError:
+                break
+        for n in names:  # fall back to a recognizable terminal name
+            low = n.lower()
+            if any(k in low for k in ("cmux", "iterm", "terminal", "code",
+                                      "warp", "alacritty", "kitty", "wezterm", "hyper")):
+                return n.rsplit("/", 1)[-1]
+        return names[0].rsplit("/", 1)[-1] if names else "your terminal"
+    except Exception:  # noqa: BLE001
+        return "your terminal"
+
+
 def _check_accessibility(prompt: bool = True) -> bool:
     """Pasting (Cmd+V) needs Accessibility permission for the app running this
     daemon. Listening to the hotkey only needs Input Monitoring, so recording
@@ -185,11 +219,28 @@ def _check_accessibility(prompt: bool = True) -> bool:
         )
         trusted = AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: bool(prompt)})
         if not trusted:
+            host = _host_app_name()
             print("⚠  Accessibility permission is NOT granted for this app.")
-            print("   Recording works, but pasting (Cmd+V) will silently do nothing.")
-            print("   Fix: System Settings → Privacy & Security → Accessibility →")
-            print("   enable the app running this daemon (your terminal: cmux / Terminal /")
-            print("   iTerm), then restart the daemon. (A prompt should have just opened.)\n")
+            print("   Recording works, but auto-paste (Cmd+V) will silently do nothing")
+            print("   (that's why manual ⌘V works but the daemon's paste doesn't).")
+            print(f"   Enable **{host}** in System Settings → Privacy & Security →")
+            print("   Accessibility, then restart the daemon.\n")
+            # Open the exact settings pane so the user doesn't have to hunt for it.
+            subprocess.run(
+                ["open",
+                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"],
+                capture_output=True,
+            )
+            # And a blocking dialog so it can't be missed in the console.
+            subprocess.run(
+                ["osascript", "-e",
+                 'display dialog "Whispr needs Accessibility permission to paste '
+                 'transcribed text at your cursor.\\n\\nEnable the app running this '
+                 'daemon (' + host + ') in:\\nPrivacy & Security \\u2192 Accessibility, '
+                 'then restart the daemon." buttons {"OK"} default button "OK" '
+                 'with icon caution with title "Whispr"'],
+                capture_output=True,
+            )
         return bool(trusted)
     except Exception as exc:  # noqa: BLE001
         print("⚠  Could not check Accessibility permission:", exc)
