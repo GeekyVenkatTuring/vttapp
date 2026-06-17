@@ -162,6 +162,29 @@ def on_release(key):
         _alt_down = False
 
 
+# ── macOS permissions ─────────────────────────────────────────────────────────
+def _check_accessibility(prompt: bool = True) -> bool:
+    """Pasting (Cmd+V) needs Accessibility permission for the app running this
+    daemon. Listening to the hotkey only needs Input Monitoring, so recording
+    can work while pasting silently fails. Check + prompt up front so the user
+    gets a clear signal instead of a no-op paste."""
+    try:
+        from ApplicationServices import (
+            AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt,
+        )
+        trusted = AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: bool(prompt)})
+        if not trusted:
+            print("⚠  Accessibility permission is NOT granted for this app.")
+            print("   Recording works, but pasting (Cmd+V) will silently do nothing.")
+            print("   Fix: System Settings → Privacy & Security → Accessibility →")
+            print("   enable the app running this daemon (your terminal: cmux / Terminal /")
+            print("   iTerm), then restart the daemon. (A prompt should have just opened.)\n")
+        return bool(trusted)
+    except Exception as exc:  # noqa: BLE001
+        print("⚠  Could not check Accessibility permission:", exc)
+        return True  # don't block startup on the check itself
+
+
 # ── macOS window behavior (no Dock icon, joins current Space, non-activating) ──
 def _make_app_accessory():
     """Make the process an accessory app so it never steals focus / switches
@@ -449,6 +472,8 @@ def main():
     app = WhisprApp()
     app.bar.show()   # builds the bar window (triggers Tk's TIS init on main thread)
     app.bar.hide()
+
+    _check_accessibility()  # warn (and prompt) if Cmd+V paste won't be allowed
 
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE, channels=CHANNELS,
