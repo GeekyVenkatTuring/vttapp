@@ -322,6 +322,16 @@ def main():
     print("    Press Right Option (⌥) to start listening, press again to transcribe & paste.")
     print("    Press Ctrl+C in this terminal to quit.\n")
 
+    # IMPORTANT (macOS): Tkinter and pynput both call the Text Input Source
+    # (TIS/TSM) APIs, which abort the process if hit from two threads at once.
+    # So we must fully initialize Tk on the main thread *before* starting the
+    # pynput listener. Creating the root + bar window up front runs all of Tk's
+    # one-time TIS/keymap init now; later Toplevels reuse the same display and
+    # don't touch TIS again.
+    app = WhisprApp()
+    app.bar.show()   # builds the bar window (triggers Tk's TIS init on main thread)
+    app.bar.hide()
+
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE, channels=CHANNELS,
         dtype="float32", callback=_audio_callback,
@@ -330,8 +340,8 @@ def main():
 
     try:
         stream.start()
-        listener.start()
-        WhisprApp().run()
+        listener.start()   # safe now: Tk's TIS init already completed on the main thread
+        app.run()
     except KeyboardInterrupt:
         print("\n👋 Daemon stopped.")
     except Exception as exc:  # noqa: BLE001
