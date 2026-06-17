@@ -28,6 +28,7 @@ Requires one-time macOS permissions:
 import os
 import sys
 import math
+import time
 import wave
 import queue
 import threading
@@ -75,7 +76,17 @@ _paste_controller = keyboard.Controller()
 
 def _paste_text(text: str):
     subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+    time.sleep(0.05)  # let the pasteboard settle
     try:
+        # Release any modifier that might still be physically held (e.g. the
+        # user is still holding ⌥ from stopping the recording). Otherwise the
+        # synthetic Cmd+V becomes Cmd+⌥+V and won't paste.
+        for mod in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r,
+                    keyboard.Key.shift, keyboard.Key.ctrl, keyboard.Key.cmd):
+            try:
+                _paste_controller.release(mod)
+            except Exception:  # noqa: BLE001
+                pass
         with _paste_controller.pressed(keyboard.Key.cmd):
             _paste_controller.press("v")
             _paste_controller.release("v")
@@ -430,7 +441,7 @@ class WhisprApp:
         if text:
             # Let the bar fully dismiss and focus return to the target app
             # before sending Cmd+V, so the paste lands at the cursor.
-            self.root.after(120, lambda: self._paste(text))
+            self.root.after(220, lambda: self._paste(text))
         else:
             print("⚠  No speech detected.")
 
@@ -473,7 +484,9 @@ def main():
     app.bar.show()   # builds the bar window (triggers Tk's TIS init on main thread)
     app.bar.hide()
 
-    _check_accessibility()  # warn (and prompt) if Cmd+V paste won't be allowed
+    # Warn (and prompt) if Cmd+V paste won't be allowed.
+    if _check_accessibility():
+        print("✅ Accessibility granted — auto-paste enabled.\n")
 
     stream = sd.InputStream(
         samplerate=SAMPLE_RATE, channels=CHANNELS,
