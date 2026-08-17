@@ -9,7 +9,7 @@ VoiceToText (VTT) is a local speech-to-text app with two entry points:
 1. **Web UI** — React frontend + FastAPI backend. Record audio in the browser, transcribe via the API, view/export history.
 2. **Whispr Daemon** (`backend/daemon.py`) — macOS-only background process. Press Right Option (⌥) once to pop up a small floating bar and start listening; press it again to close the bar, transcribe, and auto-paste into the focused text field via `pbcopy` + AppleScript. (Toggle-based, Wispr Flow / Typeless style — not hold-to-record.)
 
-Both use the same FastAPI backend running `faster-whisper` locally on CPU (no cloud API required). The raw transcript is then reformatted by a local LLM (**Gemma 3 1B via Ollama**) for punctuation and capitalization — see `backend/formatter.py`.
+Both use the same FastAPI backend running `faster-whisper` locally on CPU (no cloud API required). The raw transcript then gets punctuation and capitalization restored by a local **ONNX punctuation model** — see `backend/punctuate.py`.
 
 ---
 
@@ -22,12 +22,7 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-**Ollama** (transcript formatting — required for clean punctuation; the app still works without it, just returns the raw transcript):
-```bash
-brew install ollama
-ollama serve            # start the local server (http://localhost:11434)
-ollama pull gemma3:1b   # ~815 MB, one-time download
-```
+The punctuation model (transcript formatting) is pulled automatically from Hugging Face on first run (~1 GB, cached afterwards). No extra server is needed; if the model can't be loaded the app still works and just returns the raw transcript.
 
 **Frontend** (web UI):
 ```bash
@@ -66,14 +61,15 @@ npm run build        # tsc type-check + vite build (fails on type errors)
 - Model is currently `"small"` on CPU with `int8` compute — swap to `"base"` (faster) or `"medium"` (more accurate) at the top of `main.py`
 - **History is in-memory only** — it resets on every backend restart. The frontend independently persists history to `localStorage` under the key `vtt_history`
 - CORS is open to `localhost:5173`, `5174`, `5175` (Vite dev ports)
-- After transcription, `_postprocess()` runs the text through `format_transcript()` (LLM formatting, see below) and then the `_SLASH_RE` substitution — in that order, so casing is settled before slash commands are rebuilt
+- After transcription, `_postprocess()` restores punctuation/casing via `punctuate.restore()` and then applies the `_SLASH_RE` substitution — in that order, so casing is settled before slash commands are rebuilt
 
-### Transcript formatting (`backend/formatter.py`)
+### Transcript formatting (`backend/punctuate.py`)
 
-- Sends the raw Whisper transcript to a local **Ollama** server (`http://localhost:11434`) running **Gemma 3 1B** (`gemma3:1b`), with a system prompt that restores punctuation/capitalization and splits run-on speech — without adding or removing meaningful words
-- **Graceful degradation**: if Ollama is down, the model is missing, or the request times out, the original transcript is returned unchanged — the app never hard-fails on formatting
-- Env vars: `VTT_FORMAT=0` disables formatting entirely; `VTT_FORMAT_MODEL` overrides the model (default `gemma3:1b`); `OLLAMA_URL` overrides the server URL
-- Transcripts longer than `_MAX_CHARS` (6000) skip the LLM
+- A token-classification model (`1-800-BAD-CODE/xlm-roberta_punctuation_fullstop_truecase`) run via the `punctuators` package on **onnxruntime**. Restores punctuation, capitalization (true-casing) **and** sentence boundaries in one ~0.5s pass — no LLM, no extra server
+- Because it only *labels existing words*, it can never add, drop, paraphrase, or "answer" the text, so it does not lose context on long run-on transcripts (the reason the earlier Gemma 3 1B LLM formatter was removed). Verified 100% word retention on a 326-word transcript that collapsed under the LLM
+- Input is normalized (lowercase + strip existing punctuation) before inference to avoid double-punctuation artifacts. ~1 GB model, downloaded once from Hugging Face and cached; lazy-loaded and warmed at startup
+- **Graceful degradation**: if the package/model is unavailable or inference fails, the raw transcript is returned unchanged — the app never hard-fails on formatting
+- Env vars: `VTT_FORMAT=0` disables formatting entirely; `VTT_PUNCT_MODEL` overrides the model
 
 ### Frontend (`frontend/src/`)
 

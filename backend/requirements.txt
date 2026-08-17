@@ -4,4 +4,5 @@ python-multipart==0.0.9
 faster-whisper==1.1.1
 python-dotenv==1.0.1
 aiofiles==23.2.1
-requests==2.32.3  # backend → Ollama (Gemma 3 1B) for transcript formatting
+requests==2.32.3  # used by the Whispr daemon to call the backend
+punctuators==0.0.7  # ONNX punctuation + truecase model for transcript formatting (see punctuate.py)

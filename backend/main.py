@@ -9,7 +9,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
 
-from formatter import format_transcript
+import punctuate
 
 # "slash goal" → "/goal", "slash loop" → "/loop", etc.
 # Whisper always transcribes the spoken word "slash" literally; this converts it.
@@ -17,9 +17,10 @@ _SLASH_RE = re.compile(r'\bslash\s+([\w][\w-]*)', re.IGNORECASE)
 
 
 def _postprocess(text: str) -> str:
-    # 1. Restore punctuation/capitalization via the local LLM (Gemma 3 1B / Ollama).
-    text = format_transcript(text)
-    # 2. Spoken "slash goal" → "/goal" (run after the LLM so casing is settled).
+    # 1. Restore punctuation/capitalization via the ONNX punctuation model.
+    #    It only labels existing words, so it never drops or rewrites content.
+    text = punctuate.restore(text)
+    # 2. Spoken "slash goal" → "/goal" (run after so casing is settled).
     return _SLASH_RE.sub(lambda m: f"/{m.group(1)}", text)
 
 
@@ -36,7 +37,8 @@ def get_model() -> WhisperModel:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    get_model()  # warm up at startup
+    get_model()  # warm up the Whisper model at startup
+    punctuate.is_available()  # warm up the punctuation model too
     yield
 
 

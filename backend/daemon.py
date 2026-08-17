@@ -11,9 +11,9 @@ While the bar is up you can also:
   - click ✕ (Delete) → cancel and discard the recording
   - press Escape     → cancel and discard the recording
 
-The backend transcribes with faster-whisper and then reformats the raw text
-with a local LLM (Gemma 3 1B via Ollama) so the pasted result has proper
-punctuation and capitalization.
+The backend transcribes with faster-whisper and then restores punctuation and
+capitalization with a local ONNX punctuation model, so the pasted result is
+clean text.
 
 The process runs as a macOS "accessory" app: no Dock icon, and the bar joins
 whatever Space you are currently on instead of switching you to a blank
